@@ -579,7 +579,7 @@ class VideoClassificationLightningModule(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.model = build_model(cfg)
-        self.lr = lr
+ 
         if cfg.TRAIN.CHECKPOINT_FILE_PATH != "":
             logger.info("Load from given checkpoint file.")
             checkpoint_epoch = cu.load_checkpoint(
@@ -600,9 +600,9 @@ class VideoClassificationLightningModule(pl.LightningModule):
         return self.model(x["video"])
 
     def configure_optimizers(self):
-        optimizer = optim.AdamW(self.parameters(), lr=(self.lr or self.learning_rate))
+        optimizer = optim.AdamW(self.parameters(), lr=self.hparams.lr)
         #lr_scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 150], gamma=0.1)
-        lr_scheduler = CosineWarmupScheduler(optimizer=optimizer, warmup=100, max_iters=2000)
+        lr_scheduler = CosineWarmupScheduler(optimizer=optimizer, warmup=20, max_iters=1000)
         return [optimizer], [lr_scheduler]
 
     def _calculate_loss(self, batch, mode="train"):
