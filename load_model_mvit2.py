@@ -602,7 +602,7 @@ class VideoClassificationLightningModule(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = optim.AdamW(self.parameters(), lr=self.hparams.lr)
         #lr_scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 150], gamma=0.1)
-        lr_scheduler = CosineWarmupScheduler(optimizer=optimizer, warmup=20, max_iters=1000)
+        lr_scheduler = CosineWarmupScheduler(optimizer=optimizer, warmup=15, max_iters=1000)
         return [optimizer], [lr_scheduler]
 
     def _calculate_loss(self, batch, mode="train"):
