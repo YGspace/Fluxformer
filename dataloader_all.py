@@ -36,7 +36,7 @@ sample_rate = 4
 
 # ucf101 25fps
 # hmdb51 30fps
-_BATCH_SIZE = 32  # 16
+_BATCH_SIZE = 4  # 16
 _NUM_WORKERS = 8
 
 

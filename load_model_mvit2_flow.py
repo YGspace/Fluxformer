@@ -1,14 +1,16 @@
 import math
 from functools import partial
 
+import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import torchshow as ts
+from einops import rearrange
 from fairscale.nn.checkpoint import checkpoint_wrapper
 from fvcore.common.registry import Registry
-import numpy as np
 from torch.distributed.algorithms.ddp_comm_hooks import (
     default as comm_hooks_default,
 )
@@ -16,17 +18,21 @@ from torch.nn.init import trunc_normal_
 
 import utils.checkpoint as cu
 import utils.logging as logging
+from flow.flow_viz import flow_to_image
+from flow.unimatch import UniMatch
 from models import head_helper, stem_helper  # noqa
-from models.attention import MultiScaleBlock
 from models.build import MODEL_REGISTRY
 from models.common import TwoStreamFusion
+from models.duplex_attention import MultiScaleBlock
 from models.reversible_mvit import ReversibleMViT
-from  soft_target_cross_entropy import SoftTargetCrossEntropyLoss
 from models.utils import (
     calc_mvit_feature_geometry,
     get_3d_sincos_pos_embed,
     round_width,
 )
+from soft_target_cross_entropy import SoftTargetCrossEntropyLoss
+
+# from ./FlowFormer-Official.configs.submission import get_cfg as get_submission_cfg
 
 logger = logging.get_logger(__name__)
 
@@ -158,6 +164,16 @@ class MViT(nn.Module):
             raise NotImplementedError("Only supports layernorm.")
         self.num_classes = num_classes
         self.patch_embed = stem_helper.PatchEmbed(
+            dim_in=in_chans,
+            dim_out=embed_dim,
+            kernel=cfg.MVIT.PATCH_KERNEL,
+            stride=cfg.MVIT.PATCH_STRIDE,
+            padding=cfg.MVIT.PATCH_PADDING,
+            conv_2d=self.use_2d_patch,
+        )
+
+        ####flow embedding
+        self.flow_patch_embed = stem_helper.PatchEmbed(
             dim_in=in_chans,
             dim_out=embed_dim,
             kernel=cfg.MVIT.PATCH_KERNEL,
@@ -331,6 +347,7 @@ class MViT(nn.Module):
                     residual_pooling=cfg.MVIT.RESIDUAL_POOLING,
                     dim_mul_in_att=cfg.MVIT.DIM_MUL_IN_ATT,
                     separate_qkv=cfg.MVIT.SEPARATE_QKV,
+                    clu_depth=True if i == 21 else False
                 )
 
                 if cfg.MODEL.ACT_CHECKPOINT:
@@ -479,8 +496,11 @@ class MViT(nn.Module):
 
         return x
 
-    def forward(self, x, bboxes=None, return_attn=False):
+    def forward(self, x, flow, bboxes=None, return_attn=False):
         x, bcthw = self.patch_embed(x)
+
+        flow, bchw = self.flow_patch_embed(flow)  ##
+
         bcthw = list(bcthw)
         if len(bcthw) == 4:  # Fix bcthw in case of 4D tensor
             bcthw.insert(2, torch.tensor(self.T))
@@ -523,12 +543,49 @@ class MViT(nn.Module):
 
         thw = [T, H, W]
 
+        ########### flow
+        s = 1 if self.cls_embed_on else 0
+        if self.use_fixed_sincos_pos:
+            flow += self.pos_embed[:, s:, :]  # s: on/off cls token
+
+        if self.cls_embed_on:
+            cls_tokens = self.cls_token.expand(
+                B, -1, -1
+            )  # stole cls_tokens impl from Phil Wang, thanks
+            if self.use_fixed_sincos_pos:
+                cls_tokens = cls_tokens + self.pos_embed[:, :s, :]
+            flow = torch.cat((cls_tokens, flow), dim=1)
+
+        if self.use_abs_pos:
+            if self.sep_pos_embed:
+                pos_embed = self.pos_embed_spatial.repeat(
+                    1, self.patch_dims[0], 1
+                ) + torch.repeat_interleave(
+                    self.pos_embed_temporal,
+                    self.patch_dims[1] * self.patch_dims[2],
+                    dim=1,
+                )
+                if self.cls_embed_on:
+                    pos_embed = torch.cat([self.pos_embed_class, pos_embed], 1)
+                flow += self._get_pos_embed(pos_embed, bcthw)
+            else:
+                flow += self._get_pos_embed(self.pos_embed, bcthw)
+
+        if self.drop_rate:
+            flow = self.pos_drop(x)
+
+        if self.norm_stem:
+            flow = self.norm_stem(x)
+
+        thw = [T, H, W]
+        ##############
+
         if self.enable_rev:
             x = self._forward_reversible(x)
 
         else:
             for blk in self.blocks:
-                x, thw = blk(x, thw)
+                x, flow, thw = blk(x, flow, thw)
 
             if self.enable_detection:
                 assert not self.enable_rev
@@ -558,6 +615,7 @@ class MViT(nn.Module):
 
         return x
 
+
 class CosineWarmupScheduler(optim.lr_scheduler._LRScheduler):
     def __init__(self, optimizer, warmup, max_iters):
         self.warmup = warmup
@@ -574,12 +632,73 @@ class CosineWarmupScheduler(optim.lr_scheduler._LRScheduler):
             lr_factor *= epoch * 1.0 / self.warmup
         return lr_factor
 
+
+class ExtractFlows():
+    def __init__(self):
+        self.opticalNet = UniMatch(feature_channels=128,
+                                   num_scales=2,
+                                   upsample_factor=4,
+                                   num_head=1,
+                                   ffn_dim_expansion=4,
+                                   num_transformer_layers=6,
+                                   reg_refine=True,
+                                   task='flow')
+        checkpoint = torch.load(
+            "/home/hong/workspace/source/new_vit/flow_pretrained/gmflow-scale2-regrefine6-mixdata-train320x576-4e7b215d.pth",
+            map_location='cuda:0')
+        self.opticalNet.load_state_dict(checkpoint['model'], strict=True)
+        self.opticalNet.to(torch.device('cuda:0' if torch.cuda.is_available() else 'cpu'))
+        self.opticalNet.eval()
+        # for k, v in self.opticalNet.named_parameters():
+        #     v.requires_grad = False
+
+    def extract_flows(self, imgs):
+        opticalflows_list_train = []
+        B, _, _, _, _ = imgs.shape
+        for j in range(0, 15):
+            image1 = imgs[:, :, j, :, :]
+            image2 = imgs[:, :, j + 1, :, :]
+
+            opticalflows = self.opticalNet(image1, image2,
+                                           attn_type='swin',
+                                           attn_splits_list=[2, 8],
+                                           corr_radius_list=[-1, 4],
+                                           prop_radius_list=[-1, 1],
+                                           num_reg_refine=6,
+                                           task='flow',
+                                           pred_bidir_flow=False,
+                                           )
+
+            flow_pr = opticalflows['flow_preds'][-1]
+
+            flow_pr = flow_pr.permute(0, 2, 3, 1)
+            flow_pr = flow_pr.cpu().detach().numpy()
+            b, c, h, w = flow_pr.shape
+
+            for k in range(b):
+                f = flow_to_image(flow_pr[k])
+
+                f = rearrange(f, ' h w c ->  c h w')
+                opticalflows_list_train.append(f)
+            if j == 14:
+                for k in range(b):
+                    f = flow_to_image(flow_pr[k])
+
+                    f = rearrange(f, ' h w c ->  c h w')
+                    opticalflows_list_train.append(f)
+        opticalflows_list_train = torch.tensor(np.array(opticalflows_list_train)).float().to('cuda')
+        opticalflows_list_train = opticalflows_list_train.clone().detach().requires_grad_(True)
+        flow_results = opticalflows_list_train.view(B, 16, 3, 224, 224)
+        flow_results = flow_results.permute(0, 2, 1, 3, 4)
+        return flow_results
+
+
 class VideoClassificationLightningModule(pl.LightningModule):
     def __init__(self, num_class, lr, args, cfg):
         super().__init__()
         self.save_hyperparameters()
         self.model = build_model(cfg)
- 
+
         if cfg.TRAIN.CHECKPOINT_FILE_PATH != "":
             logger.info("Load from given checkpoint file.")
             checkpoint_epoch = cu.load_checkpoint(
@@ -595,28 +714,36 @@ class VideoClassificationLightningModule(pl.LightningModule):
 
         self.SoftTargetCrossEntropyLoss = SoftTargetCrossEntropyLoss()
         self.data_name = args.data_name
+        # self.get_flow = ExtractFlows()
+        self.get_flow = ExtractFlows()
 
     def forward(self, x):
         return self.model(x["video"])
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(self.parameters(), lr=self.hparams.lr)
-        #lr_scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 150], gamma=0.1)
+        # lr_scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 150], gamma=0.1)
         lr_scheduler = CosineWarmupScheduler(optimizer=optimizer, warmup=15, max_iters=1000)
         return [optimizer], [lr_scheduler]
 
     def _calculate_loss(self, batch, mode="train"):
         imgs = batch["video"]
-        B,_,_,_,_ = imgs.shape
+        B, _, _, _, _ = imgs.shape
         labels = batch["label"]
-        preds = self.model(imgs)
-        #loss = F.cross_entropy(preds, labels)
-        loss = self.SoftTargetCrossEntropyLoss(preds,labels)
+        flow_imgs = self.get_flow.extract_flows((imgs))
+        imgs = torch.autograd.Variable(imgs, requires_grad=True)
 
+        # vis_imgs = torch.permute(flow_imgs, (0, 2, 1, 3, 4))
+        # ts.save(vis_imgs[0], './examples/vis_imgs.jpg')
+        # vis_imgs1 = torch.permute(imgs, (0, 2, 1, 3, 4))
+        # ts.save(vis_imgs1[0], './examples/vis_imgs1.jpg')
+
+        preds = self.model(imgs, flow_imgs)
+        loss = self.SoftTargetCrossEntropyLoss(preds, labels)
         acc = (preds.argmax(dim=-1) == labels).float().mean()
 
-        self.log("%s_loss" % mode, loss,batch_size=B)
-        self.log("%s_acc" % mode, acc,batch_size=B)
+        self.log("%s_loss" % mode, loss, batch_size=B)
+        self.log("%s_acc" % mode, acc, batch_size=B)
         return loss
 
     def training_step(self, batch, batch_idx):

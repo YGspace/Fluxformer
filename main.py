@@ -1,5 +1,5 @@
-import load_model_mvit2
-import load_model_vivit
+import load_model_mvit2_flow as mvit
+#import load_model_vivit
 import dataloader_all as dataloader
 import pytorch_lightning as pl
 
@@ -17,7 +17,7 @@ def train_model():
         cfg = assert_and_infer_cfg(cfg)
 
     train_loader, val_loader, num_classes = dataloader.make_dataloader(args.data_name)
-    model = load_model_mvit2.VideoClassificationLightningModule(num_classes, lr=3e-4,args=args,cfg=cfg)
+    model = mvit.VideoClassificationLightningModule(num_classes, lr=3e-4,args=args,cfg=cfg)
 
 
     print(model)

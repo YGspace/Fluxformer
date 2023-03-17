@@ -68,7 +68,10 @@ def parse_args():
     if len(sys.argv) == 1:
         parser.print_help()
     return parser.parse_args()
-
+#  "HMDB51":
+# "UCF101":
+# "kinetics400":
+# "kinetics600":
 
 def load_config(args, path_to_config=None):
     """
