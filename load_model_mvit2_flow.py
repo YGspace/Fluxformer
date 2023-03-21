@@ -7,8 +7,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from transformer import PatchEmbed,TransformerContainer
 import torchshow as ts
-from einops import rearrange
+from einops import rearrange, reduce, repeat
+from fast_pytorch_kmeans import KMeans
 from fairscale.nn.checkpoint import checkpoint_wrapper
 from fvcore.common.registry import Registry
 from torch.distributed.algorithms.ddp_comm_hooks import (
@@ -171,7 +173,13 @@ class MViT(nn.Module):
             padding=cfg.MVIT.PATCH_PADDING,
             conv_2d=self.use_2d_patch,
         )
-
+        self.patch_embed2 = PatchEmbed(
+            img_size=224,
+            patch_size=16,
+            in_channels=3,
+            embed_dims=768,
+            tube_size=2,
+            conv_type='Conv3d')
         ####flow embedding
         self.flow_patch_embed = stem_helper.PatchEmbed(
             dim_in=in_chans,
@@ -181,7 +189,26 @@ class MViT(nn.Module):
             padding=cfg.MVIT.PATCH_PADDING,
             conv_2d=self.use_2d_patch,
         )
-
+        self.clu_atten = TransformerContainer(
+            num_transformer_layers=2,
+            embed_dims=197,
+            num_heads=1,
+            num_frames=16,
+            norm_layer=norm_layer,
+            hidden_channels=768 * 4,
+            operator_order=['self_attn', 'ffn'],
+            name="spatial")
+        self.temporal_transformer = TransformerContainer(
+            num_transformer_layers=2,
+            embed_dims=768,
+            num_heads=4,
+            num_frames=16,
+            norm_layer=norm_layer,
+            hidden_channels=768 * 4,
+            operator_order=['self_attn', 'ffn'],
+            name="spatial")
+        self.clu_linear = nn.Linear(1576, 768)
+        self.drop_after_pos = nn.Dropout(p=0.)
         if cfg.MODEL.ACT_CHECKPOINT:
             self.patch_embed = checkpoint_wrapper(self.patch_embed)
         self.input_dims = [temporal_size, spatial_size, spatial_size]
@@ -496,7 +523,45 @@ class MViT(nn.Module):
 
         return x
 
+    def prepare_tokens(self, x):
+        # Tokenize
+        pos_embed = nn.Parameter(torch.zeros(1, self.patch_embed2.num_patches+1, 768,device='cuda'))
+        b = x.shape[0]
+        x = self.patch_embed2(x)
+
+        cls_tokens = nn.Parameter(torch.zeros(1, 1, 768,device='cuda'))
+        cls_tokens.to(torch.device('cuda:0' if torch.cuda.is_available() else 'cpu'))
+        cls_tokens = repeat(cls_tokens, 'b ... -> (repeat b) ...', repeat=x.shape[0])
+
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        x = x +pos_embed
+        x = self.drop_after_pos(x)
+
+        return x, cls_tokens, b
+
     def forward(self, x, flow, bboxes=None, return_attn=False):
+
+        clu_x, _,_ = self.prepare_tokens(x)
+        c_input = rearrange(clu_x, '(b t) p d -> b t p d', b=x.shape[0])
+        c_input = rearrange(c_input, 'b t p d -> b (t p) d')
+        kstack = None
+        for i in range(c_input.shape[0]):  # 배치수만큼
+            kmeans = KMeans(n_clusters=101, mode='euclidean', verbose=1)
+            labels = kmeans.fit_predict(c_input[i])  # 768
+            labels = labels.unsqueeze(dim=0)
+            if i == 0:
+                kstack = labels
+            else:
+                kstack = torch.cat((kstack, labels), dim=0)
+        kstack = rearrange(kstack, 'b (t p)  -> b t p', t=8)
+        k_attn = self.clu_atten(kstack.float())
+        k_attn = rearrange(k_attn, 'b t p  -> b (t p)')
+        k_out = self.clu_linear(k_attn)
+        k_out = k_out.unsqueeze(dim=1)
+
+
+
         x, bcthw = self.patch_embed(x)
 
         flow, bchw = self.flow_patch_embed(flow)  ##
@@ -586,6 +651,9 @@ class MViT(nn.Module):
         else:
             for blk in self.blocks:
                 x, flow, thw = blk(x, flow, thw)
+
+            x = torch.cat((x, k_out), dim=1)
+            x = self.temporal_transformer(x)
 
             if self.enable_detection:
                 assert not self.enable_rev
@@ -732,6 +800,7 @@ class VideoClassificationLightningModule(pl.LightningModule):
         labels = batch["label"]
         flow_imgs = self.get_flow.extract_flows((imgs))
         imgs = torch.autograd.Variable(imgs, requires_grad=True)
+        flow_imgs = torch.autograd.Variable(flow_imgs, requires_grad=True)
 
         # vis_imgs = torch.permute(flow_imgs, (0, 2, 1, 3, 4))
         # ts.save(vis_imgs[0], './examples/vis_imgs.jpg')
