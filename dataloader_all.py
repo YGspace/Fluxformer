@@ -63,6 +63,7 @@ def make_dataloader(name):
         clip_duration = num_frames_to_sample * sample_rate / fps
         print(dataset_name)
         data_module = kinetics400DataModule(clip_duration)
+
         train_dataloader = data_module.train_dataloader()
     elif dataset_name == "kinetics600":
         num_classes = 600
@@ -72,7 +73,7 @@ def make_dataloader(name):
         data_module = kinetics600DataModule(clip_duration)
         train_dataloader = data_module.train_dataloader()
     val_dataloader = data_module.val_dataloader()
-    return train_dataloader,val_dataloader,num_classes
+    return train_dataloader,val_dataloader,num_classes,data_module.get_max_iter()
 
 class UCF101DataModule(pytorch_lightning.LightningDataModule):
     # Training dataset transformations.
@@ -100,7 +101,10 @@ class UCF101DataModule(pytorch_lightning.LightningDataModule):
         id2label = {i: label for label, i in label2id.items()}
 
         print(f"Unique classes: {list(label2id.keys())}.")
+        self.max_iter = video_total // _BATCH_SIZE
 
+        def get_max_iter(self):
+            return self.max_iter
     def train_dataloader(self):
         train_transform = Compose(
             [
@@ -204,6 +208,7 @@ class kinetics400DataModule(pytorch_lightning.LightningDataModule):
         video_count_train = len(list(self.dataset_root_path.glob("train/*/*.mp4")))
         video_count_val = len(list(self.dataset_root_path.glob("val/*/*.mp4")))
         video_total = video_count_train + video_count_val
+
         print(f"Total videos: {video_total}")
 
         all_video_file_paths = (
@@ -219,7 +224,9 @@ class kinetics400DataModule(pytorch_lightning.LightningDataModule):
         id2label = {i: label for label, i in label2id.items()}
 
         print(f"Unique classes: {list(label2id.keys())}.")
-
+        self.max_iter = video_total // _BATCH_SIZE
+    def get_max_iter(self):
+        return self.max_iter
     def train_dataloader(self):
         train_transform = Compose(
             [
@@ -338,7 +345,9 @@ class kinetics600DataModule(pytorch_lightning.LightningDataModule):
         id2label = {i: label for label, i in label2id.items()}
 
         print(f"Unique classes: {list(label2id.keys())}.")
-
+        self.max_iter = video_total // _BATCH_SIZE
+    def get_max_iter(self):
+        return self.max_iter
     def train_dataloader(self):
         train_transform = Compose(
             [
@@ -454,7 +463,9 @@ class HMDB51DataModule(pytorch_lightning.LightningDataModule):
         print(self.label2id)
         # print(f"Unique classes: {list(label2id.keys())}.")
         self.dataset_root_path = '/home/hong/workspace/datasets/hmdb51/testTrainMulti_7030_splits'
-
+        self.max_iter = len(all_video_file_paths) // _BATCH_SIZE
+    def get_max_iter(self):
+        return self.max_iter
     def train_dataloader(self):
         train_transform = Compose(
             [

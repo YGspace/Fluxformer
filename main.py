@@ -16,8 +16,8 @@ def train_model():
         cfg = load_config(args, path_to_config)
         cfg = assert_and_infer_cfg(cfg)
 
-    train_loader, val_loader, num_classes = dataloader.make_dataloader(args.data_name)
-    model = mvit.VideoClassificationLightningModule(num_classes, lr=3e-4,args=args,cfg=cfg)
+    train_loader, val_loader, num_classes,max_iter = dataloader.make_dataloader(args.data_name)
+    model = mvit.VideoClassificationLightningModule(num_classes, lr=3e-4,args=args,cfg=cfg,max_iter=max_iter)
 
 
     print(model)

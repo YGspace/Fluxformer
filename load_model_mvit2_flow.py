@@ -762,11 +762,11 @@ class ExtractFlows():
 
 
 class VideoClassificationLightningModule(pl.LightningModule):
-    def __init__(self, num_class, lr, args, cfg):
+    def __init__(self, num_class, lr, args, cfg,max_iter):
         super().__init__()
         self.save_hyperparameters()
         self.model = build_model(cfg)
-
+        self.max_iter = max_iter
         if cfg.TRAIN.CHECKPOINT_FILE_PATH != "":
             logger.info("Load from given checkpoint file.")
             checkpoint_epoch = cu.load_checkpoint(
@@ -784,14 +784,14 @@ class VideoClassificationLightningModule(pl.LightningModule):
         self.data_name = args.data_name
         # self.get_flow = ExtractFlows()
         self.get_flow = ExtractFlows()
-
+        print("max iter : ",self.max_iter)
     def forward(self, x):
         return self.model(x["video"])
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(self.parameters(), lr=self.hparams.lr)
         # lr_scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 150], gamma=0.1)
-        lr_scheduler = CosineWarmupScheduler(optimizer=optimizer, warmup=15, max_iters=1000)
+        lr_scheduler = CosineWarmupScheduler(optimizer=optimizer, warmup=5, max_iters=self.max_iter)
         return [optimizer], [lr_scheduler]
 
     def _calculate_loss(self, batch, mode="train"):
