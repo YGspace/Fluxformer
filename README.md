@@ -10,3 +10,16 @@ Vision transformers have demonstrated impressive performance in various robotics
 <img width="1674" alt="Overall" src="https://github.com/YGspace/Fluxformer/assets/86955204/9318b715-5f95-4ae1-bf21-ce1bd8bb7692">
 
 
+@inproceedings{li2021improved,
+  title={MViTv2: Improved multiscale vision transformers for classification and detection},
+  author={Li, Yanghao and Wu, Chao-Yuan and Fan, Haoqi and Mangalam, Karttikeya and Xiong, Bo and Malik, Jitendra and Feichtenhofer, Christoph},
+  booktitle={CVPR},
+  year={2022}
+}
+
+@inproceedings{fan2021multiscale,
+  title={Multiscale vision transformers},
+  author={Fan, Haoqi and Xiong, Bo and Mangalam, Karttikeya and Li, Yanghao and Yan, Zhicheng and Malik, Jitendra and Feichtenhofer, Christoph},
+  booktitle={ICCV},
+  year={2021}
+}
