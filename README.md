@@ -10,3 +10,4 @@ Vision transformers have demonstrated impressive performance in various robotics
 <img width="1674" alt="Overall" src="https://github.com/YGspace/Fluxformer/assets/86955204/9318b715-5f95-4ae1-bf21-ce1bd8bb7692">
 
 
+Y. Hong, M. J. Kim, I. Lee and S. B. Yoo, "Fluxformer: Flow-Guided Duplex Attention Transformer via Spatio-Temporal Clustering for Action Recognition," in IEEE Robotics and Automation Letters, vol. 8, no. 10, pp. 6411-6418, Oct. 2023, doi: 10.1109/LRA.2023.3307285. keywords: {Transformers;Convolutional neural networks;Computational modeling;Task analysis;Data mining;Three-dimensional displays;Feature extraction;Computer vision for automation;recognition;visual learning},
