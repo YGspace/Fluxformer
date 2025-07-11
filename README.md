@@ -1,5 +1,9 @@
 # Fluxformer: Flow-Guided Duplex Attention Transformer via Spatio-Temporal Clustering for Action Recognition
 
+<img width="1355" height="604" alt="image" src="https://github.com/user-attachments/assets/3f94625d-ec5d-4cbb-8cb8-8b57fdda99e4" />
+
+
+
 **Authors**: Younggi Hong, Min Ju Kim, Isack Lee, Seok Bong Yoo  
 **Published in**: *IEEE Robotics and Automation Letters (RA-L)*, Vol. 8, No. 10, 2023  
 **DOI**: [10.1109/LRA.2023.3307285](https://doi.org/10.1109/LRA.2023.3307285)  
